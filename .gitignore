@@ -1,0 +1,20 @@
+# Entorno virtual
+venv/
+__pycache__/
+*.pyc
+
+# Archivos de entrenamiento
+*.h5
+*.pt
+*.ckpt
+
+# Bases de datos o datasets
+/data/
+datasets/
+*.csv
+
+# Archivos temporales
+.DS_Store
+.env
+logs/
+*.log
