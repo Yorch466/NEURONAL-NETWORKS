@@ -1,20 +1,26 @@
-# Entorno virtual
+# Entornos virtuales
 venv/
+dml_gpu/
+tf_210_gpu/
+
+# Archivos y carpetas de datos
+data/
+*.csv
+*.h5
+*.keras
+*.ckpt
+*.npz
+*.npy
+predicciones.txt
+
+# Archivos temporales / caché
 __pycache__/
 *.pyc
-
-# Archivos de entrenamiento
-*.h5
-*.pt
-*.ckpt
-
-# Bases de datos o datasets
-/data/
-datasets/
-*.csv
-
-# Archivos temporales
-.DS_Store
-.env
-logs/
+*.pyo
+*.pyd
 *.log
+
+# Salidas de entrenamiento
+*.tfrecord
+checkpoint/
+logs/
