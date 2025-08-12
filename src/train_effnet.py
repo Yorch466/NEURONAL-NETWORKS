@@ -3,15 +3,19 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout, BatchNormalization
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras import regularizers
+from tensorflow.keras.losses import CategoricalCrossentropy
+
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.preprocessing import StandardScaler
 import joblib
+
 
 print("exe:", sys.executable)
 print("TF:", tf.__version__)
@@ -22,7 +26,8 @@ print("Dispositivos CPU/GPU visibles:", tf.config.list_physical_devices())
 # ========================
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 16
-EPOCHS = 10
+EPOCHS_FASE1 = 10           # warmup
+EPOCHS_FASE2 = 100          # fine-tuning (EarlyStopping cortará)
 IMG_DIR = "data/images/datasets/datasets/ALLIMAGES"
 CSV_PATH = "data/2DImage2BMI/ALL_feature/Image_train.csv"
 LR = 1e-4
@@ -56,6 +61,12 @@ X = np.stack([load_image(fname) for fname in df["img_name"]], axis=0).astype("fl
 y_reg   = df[["altura", "pb", "pp"]].values.astype("float32")
 y_class = tf.keras.utils.to_categorical(df["clase"].values, num_classes=3).astype("float32")
 
+data_aug = tf.keras.Sequential([
+    tf.keras.layers.RandomFlip("horizontal"),
+    tf.keras.layers.RandomRotation(0.1),
+    tf.keras.layers.RandomZoom(0.1),
+], name="augment")
+
 # ========================
 # TRAIN / VAL (estratificado)
 # ========================
@@ -78,43 +89,66 @@ joblib.dump(scaler_y, "scaler_medidas.pkl")
 print("📏 Escalador guardado en scaler_medidas.pkl")
 
 # ========================
-# Balanceo por clases -> sample_weight
+# Balanceo por clases -> sample_weight (robusto)
 # ========================
-clases_train = np.argmax(y_class_train, axis=1)
-presentes = np.unique(clases_train)
-pesos_presentes = compute_class_weight(
-    class_weight='balanced',
-    classes=presentes,
-    y=clases_train
-)
-class_weight_dict = {int(c): float(w) for c, w in zip(presentes, pesos_presentes)}
-for k in ({0,1,2} - set(presentes)):
-    class_weight_dict[k] = 1.0
+clases_train = np.argmax(y_class_train, axis=1).astype(int)
+
+# Conteos por clase en TRAIN (minlength=3 por las clases 0,1,2)
+counts = np.bincount(clases_train, minlength=3)
+n = len(clases_train)
+n_classes_presentes = np.sum(counts > 0)
+
+# Si hay clases ausentes, evitamos compute_class_weight y calculamos a mano
+if n_classes_presentes >= 1:
+    # fórmula "balanced": n_samples / (n_classes_presentes * count_c)
+    pesos = np.array([
+        (n / (n_classes_presentes * c)) if c > 0 else 0.0
+        for c in counts
+    ], dtype="float32")
+else:
+    # fallback (no debería pasar)
+    pesos = np.ones(3, dtype="float32")
+
+# (opcional) empujar un poco más las minoritarias
+pesos *= 1.5
+
+class_weight_dict = {i: float(pesos[i]) for i in range(3)}
 
 w_class_train = np.array([class_weight_dict[int(c)] for c in clases_train], dtype="float32")
 w_reg_train = np.ones(len(X_train), dtype="float32")
 
-print("📊 Distribución TRAIN:", {int(k): int(v) for k, v in zip(*np.unique(clases_train, return_counts=True))})
-print("⚖️ Pesos de clase:", class_weight_dict)
+print("📊 Conteos TRAIN por clase:", {i:int(counts[i]) for i in range(3)})
+print("⚖️ Pesos por clase:", class_weight_dict)
+
 
 # ========================
 # MODELO
 # ========================
-base_model = EfficientNetB0(include_top=False, weights="imagenet", input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
-x = GlobalAveragePooling2D()(base_model.output)
+base_model = EfficientNetB0(include_top=False, weights="imagenet",
+                            input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
+base_model.trainable = False  # Fase 1: congelado
 
-salida_reg = Dense(3, activation="linear",  name="regression")(x)
+# Entrada con data augmentation
+inputs = tf.keras.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
+x = data_aug(inputs)                      # augment a las imágenes
+x = base_model(x, training=False)         # EfficientNet congelada
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.2)(x)
+
+# Salidas
+salida_reg = Dense(3, activation="linear", name="regression",
+                   kernel_regularizer=regularizers.l2(1e-5))(x)
 salida_cls = Dense(3, activation="softmax", name="classification")(x)
 
-model = Model(inputs=base_model.input, outputs=[salida_reg, salida_cls])
+model = Model(inputs=inputs, outputs=[salida_reg, salida_cls])
 
+# Compilación con MAE en la rama de regresión
 model.compile(
     optimizer=Adam(learning_rate=LR),
-    loss=["mse", "categorical_crossentropy"],
-    metrics=[[], ["accuracy"]],
-    loss_weights=[0.2, 1.0]
+    loss=["mse", CategoricalCrossentropy(label_smoothing=0.05)],
+    metrics=[["mae"], ["accuracy"]],
+    loss_weights=[0.15, 1.5]
 )
-
 model.summary()
 
 # ========================
@@ -122,25 +156,52 @@ model.summary()
 # ========================
 cbs = [
     EarlyStopping(monitor="val_classification_accuracy", mode="max",
-                  patience=5, restore_best_weights=True),
+                  patience=15, restore_best_weights=True, verbose=1),
     ModelCheckpoint("best_model.keras", monitor="val_classification_accuracy",
-                    mode="max", save_best_only=True, save_weights_only=False, verbose=1),
+                    mode="max", save_best_only=True, verbose=1),
+    ReduceLROnPlateau(monitor="val_classification_loss", mode="min",
+                      factor=0.5, patience=5, min_lr=1e-6, verbose=1)
 ]
 
 # ========================
-# ENTRENAR
+# ENTRENAR FASE 1
 # ========================
-print("🚀 Entrenando modelo (CPU)...")
-history = model.fit(
-    X_train,
-    [y_reg_train, y_class_train],
+print("🚀 Fase 1 (warm-up, base congelada) ...")
+history1 = model.fit(
+    X_train, [y_reg_train, y_class_train],
     validation_data=(X_val, [y_reg_val, y_class_val]),
-    epochs=EPOCHS,
+    epochs=EPOCHS_FASE1,
     batch_size=BATCH_SIZE,
     sample_weight=[w_reg_train, w_class_train],
     callbacks=cbs,
-    shuffle=True,
-    verbose=1
+    shuffle=True, verbose=1
+)
+
+# ========================
+# ENTRENAR FASE 2 (fine-tuning)
+# ========================
+base_model.trainable = True
+# Congelar BatchNorm al hacer FT
+for l in base_model.layers:
+    if isinstance(l, BatchNormalization):
+        l.trainable = False
+
+model.compile(
+    optimizer=Adam(learning_rate=LR * 0.1),   # LR más bajo en FT
+    loss=["mse", CategoricalCrossentropy(label_smoothing=0.05)],
+    metrics=[["mae"], ["accuracy"]],
+    loss_weights=[0.15, 1.5]
+)
+
+print("🚀 Fase 2 (fine-tuning, base entrenable) ...")
+history2 = model.fit(
+    X_train, [y_reg_train, y_class_train],
+    validation_data=(X_val, [y_reg_val, y_class_val]),
+    epochs=EPOCHS_FASE2,
+    batch_size=BATCH_SIZE,
+    sample_weight=[w_reg_train, w_class_train],
+    callbacks=cbs,
+    shuffle=True, verbose=1
 )
 
 # ========================
@@ -156,6 +217,10 @@ print("✅ Guardado: .keras y .h5")
 scaler_y = joblib.load("scaler_medidas.pkl")
 pred_reg, pred_class_prob = model.predict(X_val, batch_size=BATCH_SIZE)
 pred_reg = scaler_y.inverse_transform(pred_reg)  # volver a valores reales
+
+# Evitar negativos en PB/PP
+pred_reg[:, 1] = np.clip(pred_reg[:, 1], 0, None)
+pred_reg[:, 2] = np.clip(pred_reg[:, 2], 0, None)
 pred_class = np.argmax(pred_class_prob, axis=1)
 
 etiquetas = {0: "Flaco", 1: "Normal", 2: "Sobrepeso"}
