@@ -1,0 +1,65 @@
+🅰️ Activar el entorno (siempre)
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL"
+.\venv\Scripts\Activate.ps1
+
+🅱️ (Opcional) Probar SOLO la Red 1 (antropométrica) por CLI
+python preddict_cli.py --pesotalla_csv data\goals\comb_pesotalla_long_finite.csv `
+  "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\images\datasets\datasets\ALLIMAGES\0_F_20_154940_6350294.jpg"
+
+
+🅲️ Entrenar la Red 2 (planner)
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\src_planner"
+
+python mvp_planner_train.py `
+  --goals_dir "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\goals" `
+  --pesotalla_csv "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\goals\comb_pesotalla_long_finite.csv" `
+  --outdir "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\ckpts_planner" `
+  --epochs 200 --batch 64
+
+
+🅳️ Inferencia SOLO de la Red 2 (planner)
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\src_planner"
+
+python mvp_planner_infer.py `
+  --sex varones --height_cm 175 --weight_kg 82 `
+  --goal_3200_s 1110 --goal_push 45 --goal_sit 50 `
+  --vegan 0 --lactose_free 0 --gluten_free 0
+
+🅴️ Instalar FastAPI + servidor (una vez)
+pip install fastapi uvicorn[standard] python-multipart
+
+🅵️ Correr el backend (Red 1 ➜ Red 2 encadenadas)
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\backend"
+uvicorn main:app --reload --port 8000
+
+🅶️ Probar el endpoint /process (desde otra terminal)
+$img = "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\images\datasets\datasets\ALLIMAGES\0_F_20_154940_6350294.jpg"
+$r = curl.exe -s -X POST "http://127.0.0.1:8000/process" `
+  -F "file=@$img" `
+  -F "sex=0" `
+  -F "goal_3200_s=1110" `
+  -F "goal_push=45" `
+  -F "goal_sit=50"
+$r | ConvertFrom-Json | ConvertTo-Json -Depth 6
+
+Opción 2: Invoke-WebRequest (PS 5.1)
+$img = "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\images\datasets\datasets\ALLIMAGES\0_F_20_154940_6350294.jpg"
+$r = Invoke-WebRequest -Uri "http://127.0.0.1:8000/process" -Method Post -Form @{
+  file = Get-Item $img
+  sex = "0"
+  goal_3200_s = "1110"
+  goal_push = "45"
+  goal_sit = "50"
+}
+$r.Content | ConvertFrom-Json | ConvertTo-Json -Depth 6
+
+🅷️ (Opcional) Silenciar mensajes oneDNN de TF
+$env:TF_ENABLE_ONEDNN_OPTS="0"
+uvicorn main:app --reload --port 8000
+
+🅸️ (Opcional) Exponer a móvil en la misma red / internet
+Misma red Wi‑Fi: usa http://<IP_DE_TU_PC>:8000/process
+Externo (rápido):
+
+ngrok http 8000
+
