@@ -1,214 +1,201 @@
-
-import os, json, math
+# mvp_planner_infer.py
+import os, json, argparse
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 import joblib
+import tensorflow as tf
 
-from datetime import timedelta
+# ====== Config ======
+# Cambia este default si quieres dejar ruta fija:
+DEFAULT_ART_DIR = r"E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\ckpts_planner"
 
-# Load artifacts
-ART_DIR = os.environ.get("ART_DIR", ".")
+# --- catálogo mínimo para armar plan (puedes reemplazar por tus CSV) ---
+EXERCISES = {
+    "upper": ["Flexiones", "Remo mancuerna", "Press militar", "Remo invertido"],
+    "lower": ["Sentadilla goblet", "Zancadas", "Puente de glúteo", "Peso muerto rumano"],
+    "core":  ["Plancha", "Dead bug", "Bird-dog", "Crunch"]
+}
+RECIPES = [
+    {"title":"Avena con yogurt y frutas", "kcal":450, "protein_g":20, "fat_g":12, "carbs_g":65, "tags":[]},
+    {"title":"Tofu salteado + arroz",     "kcal":650, "protein_g":35, "fat_g":18, "carbs_g":85, "tags":["vegano","sin_lactosa"]},
+    {"title":"Pollo + quinoa + ensalada", "kcal":700, "protein_g":55, "fat_g":20, "carbs_g":60, "tags":["sin_gluten","sin_lactosa"]},
+    {"title":"Ensalada de garbanzos",     "kcal":550, "protein_g":25, "fat_g":18, "carbs_g":70, "tags":["vegano","sin_lactosa","sin_gluten"]},
+    {"title":"Salmón + camote + brócoli", "kcal":720, "protein_g":45, "fat_g":30, "carbs_g":55, "tags":["sin_gluten","sin_lactosa"]},
+]
 
-with open(os.path.join(ART_DIR, "planner_columns.json"), "r", encoding="utf-8") as f:
-    cols = json.load(f)
-INPUT_COLS = cols["input_cols"]
-TARGET_COLS = cols["target_cols"]
+def choose_meals(kcal_target, vegan=0, lactose_free=0, gluten_free=0):
+    allowed = []
+    for r in RECIPES:
+        if vegan and "vegano" not in r["tags"]: continue
+        if lactose_free and "sin_lactosa" not in r["tags"]: continue
+        if gluten_free and "sin_gluten" not in r["tags"]: continue
+        allowed.append(r)
+    if not allowed: allowed = RECIPES
+    per_meal = kcal_target/3.0
+    allowed = sorted(allowed, key=lambda r: abs(r["kcal"]-per_meal))
+    return allowed[:3]
 
-scaler_x = joblib.load(os.path.join(ART_DIR, "scaler_inputs.pkl"))
-scaler_y = joblib.load(os.path.join(ART_DIR, "scaler_targets.pkl"))
-model = tf.keras.models.load_model(os.path.join(ART_DIR, "planner_model.keras"))
+def split_minutes(total, parts):
+    if total<=0 or parts<=0: return [0]*parts
+    base = int(total//parts); rem = int(total - base*parts)
+    out = [base]*parts
+    for i in range(rem): out[i]+=1
+    return out
 
-# Minimal catalogs (expand later or point to your CSVs)
-EXERCISES_CSV = os.environ.get("EXERCISES_CSV", "exercises_min.csv")
-RECIPES_CSV   = os.environ.get("RECIPES_CSV",   "recipes_min.csv")
+def plan_from_outputs(out, constraints=None):
+    c = constraints or {}
+    kcal = out["kcal"]; protein=out["protein_g"]; fat=out["fat_g"]; carbs=out["carbs_g"]
+    runs_per_wk = max(0, out["runs_per_wk"])
+    easy = max(0, out["easy_runs_per_wk"]); intervals = max(0, out["intervals_per_wk"])
+    long_run_min = max(30, int(round(0.25*60)))  # placeholder si quieres largo fijo
 
-if not os.path.isfile(EXERCISES_CSV):
-    # Fallback tiny DataFrame
-    exercises = pd.DataFrame([
-        # id, name, group, equipment, contraindications (pipe-separated)
-        [1,"Sentadilla goblet","piernas","dumbbell","rodilla|espalda"],
-        [2,"Zancadas caminando","piernas","none","rodilla"],
-        [3,"Puente de glúteo","piernas","none","espalda"],
-        [4,"Flexiones de brazos","pecho","none","hombro|muñeca"],
-        [5,"Remo con mancuernas","espalda","dumbbell","espalda"],
-        [6,"Plancha","core","none","espalda"],
-        [7,"Press banca mancuernas","pecho","dumbbell","hombro"],
-        [8,"Press militar mancuernas","hombro","dumbbell","hombro"],
-        [9,"Remo invertido","espalda","barra","hombro|codo"],
-        [10,"Saltos de cuerda","cardio","rope","rodilla|tobillo"]
-    ], columns=["id","name","group","equipment","contra"])
-else:
-    exercises = pd.read_csv(EXERCISES_CSV)
+    # Distribuir sesiones de carrera en la semana
+    blocks = []
+    if easy>0:      blocks += [("Easy run", m) for m in split_minutes(int(round(45*easy)), max(1,int(round(easy))))]
+    if intervals>0: blocks += [("Intervals", m) for m in split_minutes(int(round(20*intervals)), max(1,int(round(intervals))))]
+    blocks += [("Long run", long_run_min)]
 
-if not os.path.isfile(RECIPES_CSV):
-    recipes = pd.DataFrame([
-        # id, title, kcal, protein_g, fat_g, carbs_g, tags (comma)
-        [1,"Avena con yogurt y frutas",450,20,12,65,"lactosa"],
-        [2,"Tofu salteado con verduras + arroz",650,35,18,85,"vegano|sin_lactosa"],
-        [3,"Pollo a la plancha + quinoa + ensalada",700,55,20,60,"sin_gluten|sin_lactosa"],
-        [4,"Ensalada de garbanzos",550,25,18,70,"vegano|sin_lactosa|sin_gluten"],
-        [5,"Tortilla de claras + pan integral + palta",520,35,18,50,"lactosa_free"],
-        [6,"Salmón + camote + brócoli",720,45,30,55,"sin_gluten|sin_lactosa"],
-    ], columns=["id","title","kcal","protein_g","fat_g","carbs_g","tags"])
-else:
-    recipes = pd.read_csv(RECIPES_CSV)
-
-def seconds_to_hhmm(x):
-    m = int(x//60); s = int(x%60)
-    return f"{m:02d}:{s:02d}"
-
-def plan_from_outputs(y, constraints):
-    """
-    y: vector (12) in real scale
-    constraints: dict with dietary and injury constraints
-    Returns structured weekly plan.
-    """
-    (kcal, protein, fat, carbs,
-     run_easy, run_tempo, run_interval,
-     up_days, low_days, pushups, situps, long_run) = y.tolist()
-
-    # --- Diet: naive 3 meals close to targets ---
-    meals = []
-    allowed = recipes.copy()
-    if constraints.get("vegan", False):
-        allowed = allowed[allowed["tags"].str.contains("vegano", na=False)]
-    if constraints.get("gluten_free", False):
-        allowed = allowed[~allowed["tags"].str.contains("gluten", na=False)]
-    if constraints.get("lactose_free", False):
-        allowed = allowed[~allowed["tags"].str.contains("lactosa", na=False)]
-    if len(allowed)==0: allowed = recipes
-
-    kcal_per_meal = kcal/3.0
-    # Pick 3 meals nearest kcal_per_meal
-    allowed["diff"] = (allowed["kcal"]-kcal_per_meal).abs()
-    allowed = allowed.sort_values("diff")
-    pick = allowed.head(3).to_dict(orient="records")
-    for p in pick:
-        meals.append({
-            "title": p["title"],
-            "kcal": float(p["kcal"]), "protein_g": float(p["protein_g"]),
-            "fat_g": float(p["fat_g"]), "carbs_g": float(p["carbs_g"]),
-        })
-
-    # --- Training split (7 days) ---
-    inj_shoulder = constraints.get("inj_shoulder", False)
-    inj_knee     = constraints.get("inj_knee", False)
-    inj_back     = constraints.get("inj_back", False)
-
-    def filter_ex(group, avoid_tags):
-        df = exercises[exercises["group"]==group]
-        if len(df)==0: return []
-        if avoid_tags:
-            df = df[~df["contra"].fillna("").str.contains("|".join(avoid_tags))]
-        return df["name"].head(5).tolist()
-
-    avoid = []
-    if inj_shoulder: avoid.append("hombro")
-    if inj_knee:     avoid.append("rodilla")
-    if inj_back:     avoid.append("espalda")
-
-    upper_list = filter_ex("pecho", avoid) + filter_ex("espalda", avoid) + filter_ex("hombro", avoid)
-    lower_list = filter_ex("piernas", avoid)
-    core_list  = filter_ex("core", avoid)
-
-    # Construct schedule
     days = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
     sched = []
-    # Distribute running minutes
-    run_blocks = [
-        ("Easy run", run_easy, 3),
-        ("Tempo run", run_tempo, 2),
-        ("Intervals", run_interval, 2),
-        ("Long run", long_run, 1),
-    ]
-
-    def split_minutes(total, parts):
-        if total<=0 or parts<=0: return [0]*parts
-        base = int(total//parts)
-        rem = int(total - base*parts)
-        arr = [base]*parts
-        for i in range(rem): arr[i]+=1
-        return arr
-
-    runs_assigned = []
-    for name, mins, parts in run_blocks:
-        arr = split_minutes(int(round(mins)), parts)
-        for m in arr:
-            if m>0: runs_assigned.append((name, m))
-
-    # Strength sessions
-    up_days = int(round(up_days)); low_days = int(round(low_days))
-    pushups = int(round(pushups)); situps = int(round(situps))
-
-    # Simple weekly distribution
-    i = 0
+    up_left = int(round(out["strength_per_wk"]/2))
+    low_left = int(round(out["strength_per_wk"] - up_left))
+    push_sets = int(round(out["push_sets"])); sit_sets=int(round(out["sit_sets"]))
+    i=0
     for d in days:
-        day_plan = {"day": d, "sessions": []}
-        # Assign a run if pending
-        if i < len(runs_assigned):
-            rname, m = runs_assigned[i]; i+=1
-            day_plan["sessions"].append({"type":"run", "name": rname, "minutes": int(m)})
-        # Alternate upper/lower
-        if up_days>0:
-            day_plan["sessions"].append({"type":"strength","focus":"upper","exercises": upper_list[:3] or ["Flexiones"], "pushups_target": pushups})
-            up_days -= 1
-        elif low_days>0:
-            day_plan["sessions"].append({"type":"strength","focus":"lower","exercises": lower_list[:3] or ["Sentadilla goblet"]})
-            low_days -= 1
+        day = {"day": d, "sessions": []}
+        if i < len(blocks):
+            name, mins = blocks[i]; i+=1
+            if mins>0: day["sessions"].append({"type":"run","name":name,"minutes":mins})
+        if up_left>0:
+            day["sessions"].append({"type":"strength","focus":"upper","exercises":EXERCISES["upper"][:3],"pushups_sets":push_sets})
+            up_left-=1
+        elif low_left>0:
+            day["sessions"].append({"type":"strength","focus":"lower","exercises":EXERCISES["lower"][:3]})
+            low_left-=1
         else:
-            # core maintenance
-            if len(core_list)>0:
-                day_plan["sessions"].append({"type":"core","exercises": core_list[:2], "situps_target": situps})
-        sched.append(day_plan)
+            day["sessions"].append({"type":"core","exercises":EXERCISES["core"][:2],"situps_sets":sit_sets})
+        sched.append(day)
 
+    meals = choose_meals(kcal, vegan=c.get("vegan",0), lactose_free=c.get("lactose_free",0), gluten_free=c.get("gluten_free",0))
     return {
         "nutrition": {
-            "targets_per_day": {
-                "kcal": round(float(kcal)),
-                "protein_g": round(float(protein)),
-                "fat_g": round(float(fat)),
-                "carbs_g": round(float(carbs)),
-            },
+            "targets_per_day": {"kcal": int(round(kcal)), "protein_g": int(round(protein)),
+                                "fat_g": int(round(fat)), "carbs_g": int(round(carbs))},
             "meals_example": meals
         },
         "training": sched
     }
 
-def predict_plan(
-    sex:str, height_cm:float, weight_kg:float,
-    grade_run:int, grade_push:int, grade_abs:int,
-    vegan=False, gluten_free=False, lactose_free=False, nut_allergy=False,
-    inj_shoulder=False, inj_knee=False, inj_back=False,
-    equip_barbell=False, equip_dumbbell=True, equip_machines=False, equip_track=True
-):
-    """Returns weekly plan dict."""
-    bmi = weight_kg / ((height_cm/100.0)**2)
-    row = [
-        0 if sex=="damas" else 1,
-        height_cm, weight_kg, bmi,
-        grade_run, grade_push, grade_abs,
-        int(vegan), int(gluten_free), int(lactose_free), int(nut_allergy),
-        int(inj_shoulder), int(inj_knee), int(inj_back),
-        int(equip_barbell), int(equip_dumbbell), int(equip_machines), int(equip_track)
-    ]
-    X = np.array(row, dtype=np.float32)[None, :]
-    Xs = scaler_x.transform(X)
-    Ys = model.predict(Xs, verbose=0)
-    Y = scaler_y.inverse_transform(Ys)[0]
-    constraints = {
-        "vegan": vegan, "gluten_free": gluten_free, "lactose_free": lactose_free, "nut_allergy": nut_allergy,
-        "inj_shoulder": inj_shoulder, "inj_knee": inj_knee, "inj_back": inj_back
+
+FEATURE_COLS = [
+    "sex","h_m","w_kg","bmi","bmi_cls","pt_cat_idx",
+    "ideal_w_kg","delta_to_ideal",
+    "goal_3200_s","goal_push","goal_sit",
+    "knee","shoulder","back","vegan","lactose_free","gluten_free",
+]
+
+TARGET_COLS = [
+    "run_km_wk","runs_per_wk","intervals_per_wk","easy_runs_per_wk",
+    "strength_per_wk","push_sets","sit_sets","kcal","protein_g","fat_g","carbs_g",
+]
+
+# ====== Utils ======
+def bmi_class(bmi: float) -> int:
+    if bmi < 18.5: return 0
+    if bmi < 20.0: return 1
+    if bmi < 25.0: return 2
+    if bmi < 30.0: return 3
+    return 4
+
+def build_features(sex, height_cm, weight_kg,
+                   goal_3200_s, goal_push, goal_sit,
+                   knee, shoulder, back, vegan, lactose_free, gluten_free):
+    h_m = float(height_cm) / 100.0
+    w_kg = float(weight_kg)
+    bmi = w_kg / (h_m**2)
+    bcls = bmi_class(bmi)
+
+    # Si no tienes tabla peso-talla en infer, usa defaults coherentes al train
+    ideal_w_kg = 22.0 * (h_m**2)
+    pt_cat_idx = bcls
+    delta_to_ideal = w_kg - ideal_w_kg
+
+    row = {
+        "sex": 1.0 if (str(sex).lower() in ["1","varones","hombre","male","m"]) else 0.0,
+        "h_m": h_m, "w_kg": w_kg, "bmi": bmi, "bmi_cls": bcls,
+        "pt_cat_idx": pt_cat_idx, "ideal_w_kg": ideal_w_kg, "delta_to_ideal": delta_to_ideal,
+        "goal_3200_s": float(goal_3200_s),
+        "goal_push": int(goal_push),
+        "goal_sit": int(goal_sit),
+        "knee": int(knee), "shoulder": int(shoulder), "back": int(back),
+        "vegan": int(vegan), "lactose_free": int(lactose_free), "gluten_free": int(gluten_free),
     }
-    plan = plan_from_outputs(Y, constraints)
-    return plan
+    X = pd.DataFrame([row])[FEATURE_COLS].astype("float32").values
+    return X
+
+# ====== Main ======
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--art_dir", default=DEFAULT_ART_DIR, help="Carpeta con artefactos del planner")
+    ap.add_argument("--sex", default="varones", choices=["varones","damas","0","1","M","F","male","female"])
+    ap.add_argument("--height_cm", type=float, required=True)
+    ap.add_argument("--weight_kg", type=float, required=True)
+    ap.add_argument("--goal_3200_s", type=float, default=18*60.0)  # 3200m (segundos)
+    ap.add_argument("--goal_push", type=int, default=45)
+    ap.add_argument("--goal_sit", type=int, default=50)
+    ap.add_argument("--knee", type=int, default=0)
+    ap.add_argument("--shoulder", type=int, default=0)
+    ap.add_argument("--back", type=int, default=0)
+    ap.add_argument("--vegan", type=int, default=0)
+    ap.add_argument("--lactose_free", type=int, default=0)
+    ap.add_argument("--gluten_free", type=int, default=0)
+    args = ap.parse_args()
+
+    ART = args.art_dir
+
+    # Cargar scalers y modelo (usa best si existe; si no, mlp)
+    x_path = os.path.join(ART, "planner_x_scaler.pkl")
+    y_path = os.path.join(ART, "planner_y_scaler.pkl")
+    best_path = os.path.join(ART, "planner_best.keras")
+    mlp_path  = os.path.join(ART, "planner_mlp.keras")
+
+    if not os.path.isfile(x_path) or not os.path.isfile(y_path):
+        raise FileNotFoundError("No encuentro planner_x_scaler.pkl / planner_y_scaler.pkl en " + ART)
+
+    model_path = best_path if os.path.isfile(best_path) else mlp_path
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError("No encuentro planner_best.keras ni planner_mlp.keras en " + ART)
+
+    xsc = joblib.load(x_path)
+    ysc = joblib.load(y_path)
+    model = tf.keras.models.load_model(model_path, compile=False)
+
+    # Construir features
+    X = build_features(
+        sex=args.sex, height_cm=args.height_cm, weight_kg=args.weight_kg,
+        goal_3200_s=args.goal_3200_s, goal_push=args.goal_push, goal_sit=args.goal_sit,
+        knee=args.knee, shoulder=args.shoulder, back=args.back,
+        vegan=args.vegan, lactose_free=args.lactose_free, gluten_free=args.gluten_free
+    )
+
+    # Inferencia
+    Xz = xsc.transform(X)
+    Yz = model.predict(Xz, verbose=0)
+    Y  = ysc.inverse_transform(Yz)[0]
+
+    out = {k: float(Y[i]) for i, k in enumerate(TARGET_COLS)}
+    # redondeos suaves para mostrar
+    for k in ["runs_per_wk","intervals_per_wk","easy_runs_per_wk","strength_per_wk","push_sets","sit_sets"]:
+        out[k] = round(out[k], 1)
+    for k in ["run_km_wk"]:
+        out[k] = round(out[k], 1)
+    for k in ["kcal","protein_g","fat_g","carbs_g"]:
+        out[k] = round(out[k], 0)
+
+    constraints = {"vegan": args.vegan, "lactose_free": args.lactose_free, "gluten_free": args.gluten_free}
+    plan = plan_from_outputs(out, constraints)
+    print(json.dumps(plan, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
-    # Demo
-    plan = predict_plan(
-        sex="varones", height_cm=175, weight_kg=82,
-        grade_run=4, grade_push=3, grade_abs=3,
-        lactose_free=True, inj_knee=False, vegan=False
-    )
-    import json
-    print(json.dumps(plan, ensure_ascii=False, indent=2))
+    main()

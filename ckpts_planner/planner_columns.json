@@ -1,0 +1,34 @@
+{
+  "input_cols": [
+    "sex",
+    "h_m",
+    "w_kg",
+    "bmi",
+    "bmi_cls",
+    "pt_cat_idx",
+    "ideal_w_kg",
+    "delta_to_ideal",
+    "goal_3200_s",
+    "goal_push",
+    "goal_sit",
+    "knee",
+    "shoulder",
+    "back",
+    "vegan",
+    "lactose_free",
+    "gluten_free"
+  ],
+  "target_cols": [
+    "run_km_wk",
+    "runs_per_wk",
+    "intervals_per_wk",
+    "easy_runs_per_wk",
+    "strength_per_wk",
+    "push_sets",
+    "sit_sets",
+    "kcal",
+    "protein_g",
+    "fat_g",
+    "carbs_g"
+  ]
+}

@@ -388,8 +388,17 @@ def main():
     target_cols  = ["run_km_wk","runs_per_wk","intervals_per_wk","easy_runs_per_wk",
                     "strength_per_wk","push_sets","sit_sets","kcal","protein_g","fat_g","carbs_g"]
 
+
+
     X = Xdf[feature_cols].astype("float32").values
     Y = Ydf[target_cols].astype("float32").values
+
+
+    with open(os.path.join(args.outdir, "planner_columns.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "input_cols": feature_cols,
+            "target_cols": target_cols
+        }, f, ensure_ascii=False, indent=2)
 
     xsc, ysc = StandardScaler(), StandardScaler()
     Xz = xsc.fit_transform(X).astype("float32")
