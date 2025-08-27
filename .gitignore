@@ -1,3 +1,6 @@
+#env
+.env
+firebase_key.json
 # Entornos virtuales
 venv/
 dml_gpu/
