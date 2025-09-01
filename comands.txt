@@ -30,7 +30,7 @@ pip install fastapi uvicorn[standard] python-multipart
 
 🅵️ Correr el backend (Red 1 ➜ Red 2 encadenadas)
 cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\backend"
-uvicorn main:app --reload --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
 
 🅶️ Probar el endpoint /process (desde otra terminal)
 $img = "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\data\images\datasets\datasets\ALLIMAGES\0_F_20_154940_6350294.jpg"
@@ -62,4 +62,11 @@ Misma red Wi‑Fi: usa http://<IP_DE_TU_PC>:8000/process
 Externo (rápido):
 
 ngrok http 8000
+
+
+
+comando para iniciar 
+# en la PC donde corre FastAPI
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\backend" uvicorn main:app --host 0.0.0.0 --port 8000
+ngrok http http://localhost:8000
 
