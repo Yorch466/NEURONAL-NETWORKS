@@ -225,19 +225,17 @@ async def process(
     knee: int = Form(0), shoulder: int = Form(0), back: int = Form(0),
     vegan: int = Form(0), lactose_free: int = Form(0), gluten_free: int = Form(0)
 ):
-    # 1) Crear upload en Firestore
+    # 1) Cargar upload en Firestore
     goals = {"run_s": goal_3200_s, "push": goal_push, "sit": goal_sit}
     upload_id = create_upload(
         user_id=user_id,
-        image_path=file.filename,  # si luego usas Storage, guarda gs://...
+        image_path=file.filename, 
         sex=sex,
         goals=goals,
         status="pending"
     )
-
-    # 2) Leer imagen en memoria (una sola vez)
+    # 2) Leer imagen en memoria
     img_bytes = await file.read()
-
     # 3) Red 1: antropométrica
     arr = load_image_bytes(img_bytes)              # (224,224,3) float32
     X = np.expand_dims(arr, 0)                     # (1,224,224,3)
@@ -246,7 +244,6 @@ async def process(
     h_m, w_kg = SCALER_Y.inverse_transform(reg_z)[0].tolist()
     cls_idx = int(cls_prob.argmax(axis=1)[0])
     class_name = CLASS_NAMES[cls_idx]
-
     # 4) Guardar prediction en Firestore
     pred_id = create_prediction(upload_id, h_m, w_kg, cls_idx, class_name)
     update_upload(upload_id, {"status": "predicted", "predId": pred_id})

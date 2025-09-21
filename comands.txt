@@ -67,6 +67,7 @@ ngrok http 8000
 
 comando para iniciar 
 # en la PC donde corre FastAPI
-cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\backend" uvicorn main:app --host 0.0.0.0 --port 8000
+cd "E:\TESIS\Redes neuronales\RED CONVOLUCIONAL\backend" 
+uvicorn main:app --host 0.0.0.0 --port 8000
 ngrok http http://localhost:8000
 
