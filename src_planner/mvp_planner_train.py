@@ -11,6 +11,19 @@ import joblib
 SEED = 42
 np.random.seed(SEED); random.seed(SEED); tf.random.set_seed(SEED)
 
+FEATURE_COLS = [
+    "sex","h_m","w_kg","bmi","bmi_cls","pt_cat_idx",
+    "ideal_w_kg","delta_to_ideal",
+    "goal_3200_s","goal_push","goal_sit",
+    "knee","shoulder","back","vegan","lactose_free","gluten_free",
+]
+TARGET_COLS = [
+    "run_km_wk","runs_per_wk","intervals_per_wk","easy_runs_per_wk",
+    "strength_per_wk","push_sets","sit_sets","kcal","protein_g","fat_g","carbs_g",
+]
+
+
+
 # ---------- utilidades ----------
 def clip(a, lo, hi): return max(lo, min(float(a), hi))
 
@@ -361,10 +374,13 @@ def build_model(in_dim, out_dim):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--goals_dir", required=True, help="Carpeta con CSVs de objetivos")
+    ap.add_argument("--goals_dir", type=str, default=None, help="Carpeta pools (opcional si usas CSVs)")
     ap.add_argument("--anthro_csv", default=None, help="Opcional: CSV con sex,h_m,w_kg")
     ap.add_argument("--outdir", default="ckpts_planner", help="Salida (modelo y scalers)")
     ap.add_argument("--pesotalla_csv", default=None, help="CSV peso-talla largo")
+    ap.add_argument("--features_csv", type=str, default=None, help="Ruta a planner_features.csv")
+    ap.add_argument("--targets_csv", type=str, default=None, help="Ruta a planner_targets.csv")
+    ap.add_argument("--data_combined", type=str, default=None, help="Ruta a planner_combined.csv (features+targets)")
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--batch", type=int, default=64)
     args = ap.parse_args()
@@ -372,12 +388,23 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     logdir = "logs_planner"; os.makedirs(logdir, exist_ok=True)
 
-    print("📥 Cargando pools desde CSVs:", args.goals_dir)
+    if args.data_combined:
+        df = pd.read_csv(args.data_combined)
+        Xdf = df[FEATURE_COLS].copy()
+        Ydf = df[TARGET_COLS].copy()
+    elif args.features_csv and args.targets_csv:
+        Xdf = pd.read_csv(args.features_csv)
+        Ydf = pd.read_csv(args.targets_csv)
+    else:
+        if not args.goals_dir:
+            raise ValueError("Debes pasar --data_combined o --features_csv + --targets_csv, o bien --goals_dir.")
     pools = load_goal_pools(args.goals_dir)
+    print("📥 Cargando pools desde CSVs:", args.goals_dir)
     print({k:{kk:int(len(vv)) for kk,vv in d.items()} for k,d in pools.items()})
-
     print("🧪 Construyendo dataset…")
     Xdf, Ydf = build_dataset(pools, anthro_csv=args.anthro_csv, pesotalla_csv=args.pesotalla_csv)
+
+    
 
     feature_cols = [
     "sex","h_m","w_kg","bmi","bmi_cls","pt_cat_idx",

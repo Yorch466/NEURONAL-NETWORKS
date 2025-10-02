@@ -350,7 +350,7 @@ def apply_weight_correction(t):
 
 out_reg = Lambda(apply_weight_correction, name="regression")([out_reg_base, w_corr])
 
-# ===== Cabeza CLS (5) =====
+# ===== Cabeza CLS (5) OUTPUTS =====
 x_cls = Dense(128, activation="relu")(x_combined)
 x_cls = Dropout(0.15)(x_cls)
 out_cls = Dense(N_CLASSES, activation="softmax", name="classification")(x_cls)
